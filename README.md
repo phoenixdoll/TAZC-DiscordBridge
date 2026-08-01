@@ -108,13 +108,16 @@ journalctl -u tazc-bridge -f          # follow the logs
 
 ## Known limitations (first pass)
 
-- Inbound (Discord -> game) broadcast only reaches radios carried in a
-  player's hands, belt, or inventory -- vehicle and ground/base-station
-  radios tuned to 100MHz are not reached yet, since a Discord message has
-  no in-world position to search outward from.
-- `MAX_MESSAGE_LENGTH` in `.env` must be kept in sync by hand with your
-  server's actual `TAZC_Config.MaxMessageLength` sandbox setting -- the bot
-  has no way to read that from the running server.
+- Inbound (Discord -> game) broadcast reaches radios carried in a player's
+  hands/belt/inventory, and ground/base-station radios within range of the
+  bridge's assigned origin point (world 0,0,0) -- vehicle radios tuned to
+  100MHz are not reached yet.
+- `MAX_MESSAGE_LENGTH` in `.env` is the per-chunk size for Discord -> game
+  splitting, independent of the game's own `TAZC_Config.MaxMessageLength`
+  sandbox setting (which caps a single game -> Discord message, sent
+  unsplit). It must not exceed that sandbox setting, or the Lua side
+  discards chunks still too long for it -- the bot has no way to read the
+  server's live value, so keep them aligned by hand.
 - The read-then-truncate pattern on both ends has a small race window: a
   message arriving in the moment between one side reading and clearing a
   file could be missed. Rare in practice, not solved by a lock file here.
