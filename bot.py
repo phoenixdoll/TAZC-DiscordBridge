@@ -172,6 +172,8 @@ class TazcBridgeClient(discord.Client):
         log.info("Logged in as %s", self.user)
 
     async def on_message(self, message: discord.Message):
+        log.info("on_message: channel=%s (configured=%s) author=%s content=%r",
+                  message.channel.id, DISCORD_CHANNEL_ID, message.author, message.content)
         if message.author.bot:
             return
         if message.channel.id != DISCORD_CHANNEL_ID:
@@ -236,6 +238,7 @@ class TazcBridgeClient(discord.Client):
         await self.wait_until_ready()
 
     async def close(self):
+        self.poll_outbox.cancel()
         self.sftp.close()
         await super().close()
 
