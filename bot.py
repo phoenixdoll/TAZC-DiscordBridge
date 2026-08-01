@@ -5,8 +5,16 @@ Bridges ONE Project Zomboid radio frequency (100.0 MHz, filtered on the Lua
 side -- see TAZC_DiscordBridge.lua) to ONE Discord channel, in both
 directions, via two plain files on the game server reached over SFTP:
 
-  outbox.txt  (game -> Discord)  "<unix-seconds>|<displayName>|<message>"
-  inbox.txt   (Discord -> game)  "<displayName>|<message>"
+  outbox.txt  (game -> Discord)  "<unix-seconds>|<displayName>|<discordMessageId-or-empty>|<message>"
+  inbox.txt   (Discord -> game)  "<displayName>|<discordMessageId>|<message>"
+
+A Discord-origin line's id round-trips through the Lua side unchanged and
+comes back on the matching outbox line, purely so this bot can delete the
+original plain-text Discord message once it posts the in-character,
+packet-loss-corrupted version -- avoids having both the raw message and its
+"radio" echo sitting in the channel at once. Requires the bot to have
+**Manage Messages** permission in that channel (Send Messages alone is not
+enough to delete someone else's message).
 
 This process owns nothing about PZ's radio/packet-loss logic -- that all
 happens Lua-side. This script only: polls outbox.txt and posts new lines to
@@ -204,7 +212,7 @@ class TazcBridgeClient(discord.Client):
             return
 
         display_name = message.author.display_name
-        line = f"{_escape_field(display_name)}|{_escape_field(text)}"
+        line = f"{_escape_field(display_name)}|{message.id}|{_escape_field(text)}"
 
         try:
             await asyncio.get_event_loop().run_in_executor(
@@ -240,7 +248,23 @@ class TazcBridgeClient(discord.Client):
             if parsed is None:
                 log.warning("Malformed outbox line skipped: %r", line)
                 continue
-            _timestamp, display_name, message_text = parsed
+            _timestamp, display_name, discord_message_id, message_text = parsed
+
+            if discord_message_id is not None:
+                try:
+                    original = await channel.fetch_message(discord_message_id)
+                    await original.delete()
+                except discord.NotFound:
+                    pass  # already gone -- nothing to clean up
+                except discord.Forbidden:
+                    log.warning(
+                        "Missing Manage Messages permission in channel %s; "
+                        "cannot delete original message %s",
+                        DISCORD_CHANNEL_ID, discord_message_id,
+                    )
+                except Exception:
+                    log.exception("Failed to delete original message %s", discord_message_id)
+
             # Discord renders TAZC's existing *word* static markers as
             # italic automatically -- no extra formatting needed on them.
             await channel.send(f"**{display_name}:** {message_text}")
@@ -264,15 +288,19 @@ def _escape_field(value: str) -> str:
 
 
 def _parse_outbox_line(line: str):
-    parts = line.split("|", 2)
-    if len(parts) != 3:
+    parts = line.split("|", 3)
+    if len(parts) != 4:
         return None
-    timestamp_str, display_name, message_text = parts
+    timestamp_str, display_name, message_id_str, message_text = parts
     try:
         timestamp = int(timestamp_str)
     except ValueError:
         timestamp = 0
-    return timestamp, display_name, message_text
+    try:
+        message_id = int(message_id_str) if message_id_str else None
+    except ValueError:
+        message_id = None
+    return timestamp, display_name, message_id, message_text
 
 
 def main():

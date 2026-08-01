@@ -16,8 +16,19 @@ for the game-side half of this.
    was sent but not read its text.
 4. Open **OAuth2 -> URL Generator**. Under **Scopes** check `bot`. Under
    **Bot Permissions** check at minimum: `View Channels`, `Send Messages`,
-   `Read Message History`, `Add Reactions`. Copy the generated URL, open it
-   in a browser, and add the bot to your Discord server.
+   `Read Message History`, `Add Reactions`, `Manage Messages`. Copy the
+   generated URL, open it in a browser, and add the bot to your Discord
+   server. `Manage Messages` is required because the bot deletes the
+   original plain-text message once it posts the in-character "radio"
+   version -- without it, deletes silently fail (logged as a warning) and
+   both copies of the message stay in the channel.
+
+   If the bot is already in your server and the bridged channel has its
+   own per-role permission overwrites (as `#radio-100` does), adding the
+   scope to the invite URL and re-authorizing may not be enough -- the
+   channel-specific overwrite can still block it. Simplest fix: open the
+   channel's settings in Discord, go to **Permissions**, find the bot's
+   role/overwrite entry, and toggle **Manage Messages** to Allow directly.
 5. In Discord, enable **Developer Mode** (User Settings -> Advanced), then
    right-click the channel you want bridged and **Copy Channel ID**. This
    goes in `.env` as `DISCORD_CHANNEL_ID`.
