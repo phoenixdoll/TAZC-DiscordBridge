@@ -25,6 +25,7 @@ inbox.txt.
 import asyncio
 import logging
 import os
+import threading
 from pathlib import PurePosixPath
 
 import discord
@@ -67,11 +68,24 @@ POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "3"))
 class SftpBridge:
     """
     Thin wrapper around one paramiko SFTP connection, with reconnect on
-    failure. Not thread-safe -- only ever called from the bot's single
-    asyncio event loop via run_in_executor, never concurrently.
+    failure.
+
+    paramiko's SSHClient/SFTPClient is NOT safe for concurrent use from
+    multiple threads. Every public method here is called via
+    run_in_executor(None, ...), which dispatches to asyncio's default
+    ThreadPoolExecutor -- if two calls land close together (e.g. two
+    Discord messages a few seconds apart, or a poll_outbox tick overlapping
+    an on_message write), they run on DIFFERENT worker threads at the same
+    time. Without a lock, concurrent access into the same paramiko
+    connection can deadlock inside paramiko's own internals with no
+    timeout, silently wedging that thread forever -- previously showed up
+    as the whole bridge going quiet after working fine once. _lock
+    serializes every public method below so concurrent callers queue up
+    instead of colliding.
     """
 
     def __init__(self):
+        self._lock = threading.Lock()
         self._client: paramiko.SSHClient | None = None
         self._sftp: paramiko.SFTPClient | None = None
 
@@ -91,11 +105,11 @@ class SftpBridge:
         log.info("SFTP connected to %s", SFTP_HOST)
 
     def _ensure_connected(self):
-        log.info("_ensure_connected: start")
+        log.debug("_ensure_connected: start")
         if self._sftp is not None:
             try:
                 self._sftp.listdir(".")
-                log.info("_ensure_connected: existing connection alive")
+                log.debug("_ensure_connected: existing connection alive")
                 return
             except Exception:
                 log.warning("SFTP connection appears dead, reconnecting")
@@ -122,21 +136,26 @@ class SftpBridge:
     def read_and_clear(self, remote_path: str) -> list[str]:
         """Read every non-empty line from remote_path, then truncate it.
         Returns [] if the file doesn't exist yet (Lua hasn't written it)."""
-        self._ensure_connected()
-        try:
-            with self._sftp.open(remote_path, "r") as f:
-                lines = [line.rstrip("\n").rstrip("\r") for line in f.readlines()]
-                lines = [line for line in lines if line != ""]
-        except IOError:
-            return []
+        with self._lock:
+            self._ensure_connected()
+            try:
+                with self._sftp.open(remote_path, "r") as f:
+                    lines = [line.rstrip("\n").rstrip("\r") for line in f.readlines()]
+                    lines = [line for line in lines if line != ""]
+            except IOError:
+                return []
 
-        if lines:
-            with self._sftp.open(remote_path, "w"):
-                pass  # truncate
+            if lines:
+                with self._sftp.open(remote_path, "w"):
+                    pass  # truncate
 
-        return lines
+            return lines
 
     def append_line(self, remote_path: str, line: str):
+        with self._lock:
+            self._append_line_locked(remote_path, line)
+
+    def _append_line_locked(self, remote_path: str, line: str):
         log.info("append_line: start path=%s", remote_path)
         self._ensure_connected()
         remote_dir = str(PurePosixPath(remote_path).parent)
