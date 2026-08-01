@@ -83,14 +83,17 @@ class SftpBridge:
         log.info("SFTP connected to %s", SFTP_HOST)
 
     def _ensure_connected(self):
+        log.info("_ensure_connected: start")
         if self._sftp is not None:
             try:
                 self._sftp.listdir(".")
+                log.info("_ensure_connected: existing connection alive")
                 return
             except Exception:
                 log.warning("SFTP connection appears dead, reconnecting")
                 self.close()
         self._connect()
+        log.info("_ensure_connected: (re)connected")
 
     def _mkdirs(self, remote_dir: str):
         """paramiko has no mkdir -p; walk the path, ignoring already-exists.
@@ -126,18 +129,24 @@ class SftpBridge:
         return lines
 
     def append_line(self, remote_path: str, line: str):
+        log.info("append_line: start path=%s", remote_path)
         self._ensure_connected()
         remote_dir = str(PurePosixPath(remote_path).parent)
         try:
+            log.info("append_line: attempting open(a)")
             with self._sftp.open(remote_path, "a") as f:
                 f.write(line + "\n")
-        except IOError:
+            log.info("append_line: write succeeded on first attempt")
+        except IOError as e:
             # Most likely the directory doesn't exist yet (fresh server,
             # never had a 100MHz transmission to auto-create it). Create it
             # and retry once.
+            log.info("append_line: first open failed (%r), mkdirs then retry", e)
             self._mkdirs(remote_dir)
+            log.info("append_line: mkdirs done, retrying open(a)")
             with self._sftp.open(remote_path, "a") as f:
                 f.write(line + "\n")
+            log.info("append_line: write succeeded on retry")
 
     def close(self):
         if self._sftp is not None:
