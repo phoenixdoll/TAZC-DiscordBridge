@@ -93,13 +93,16 @@ class SftpBridge:
         self._connect()
 
     def _mkdirs(self, remote_dir: str):
-        """paramiko has no mkdir -p; walk the path, ignoring already-exists."""
-        parts = PurePosixPath(remote_dir).parts
+        """paramiko has no mkdir -p; walk the path, ignoring already-exists.
+        Plain string splitting, not PurePosixPath.parts -- that yields a
+        leading '/' as its own part for an absolute path, which double-
+        slashes every segment built from it ('//server-data', not
+        '/server-data'), and paths starting with exactly two slashes have
+        unspecified behaviour on POSIX systems."""
+        segments = [p for p in remote_dir.split("/") if p]
         current = ""
-        for part in parts:
-            current = current + "/" + part if current else part
-            if not current.startswith("/"):
-                current = "/" + current
+        for segment in segments:
+            current += "/" + segment
             try:
                 self._sftp.mkdir(current)
             except IOError:
