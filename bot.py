@@ -222,21 +222,24 @@ class TazcBridgeClient(discord.Client):
         if not text:
             return
 
-        if len(text) > MAX_MESSAGE_LENGTH:
-            await message.reply(
-                f"Too long for radio -- max {MAX_MESSAGE_LENGTH} characters "
-                f"(this server's TAZC_Config.MaxMessageLength), yours was {len(text)}. "
-                f"Not sent."
-            )
-            return
-
         display_name = message.author.display_name
-        line = f"{_escape_field(display_name)}|{message.id}|{_escape_field(text)}"
+        chunks = _chunk_message(text, MAX_MESSAGE_LENGTH)
+        if len(chunks) > 1:
+            log.info("on_message: split %d chars into %d chunks (max %d)",
+                      len(text), len(chunks), MAX_MESSAGE_LENGTH)
 
         try:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self.sftp.append_line, REMOTE_INBOX, line
-            )
+            for chunk in chunks:
+                # Same message.id on every chunk -- the Lua side round-trips
+                # it back on each chunk's outbox echo unchanged, so the
+                # original gets deleted once (fetch_message on an
+                # already-deleted id just raises NotFound, silently caught
+                # in poll_outbox) while every chunk still gets its own
+                # in-character radio line.
+                line = f"{_escape_field(display_name)}|{message.id}|{_escape_field(chunk)}"
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self.sftp.append_line, REMOTE_INBOX, line
+                )
         except Exception:
             log.exception("Failed to write inbox line")
             await message.add_reaction("\N{WARNING SIGN}")
@@ -296,6 +299,28 @@ class TazcBridgeClient(discord.Client):
         self.poll_outbox.cancel()
         self.sftp.close()
         await super().close()
+
+
+def _chunk_message(text: str, max_len: int) -> list[str]:
+    """Split text into pieces of at most max_len characters. Breaks on the
+    last whitespace within the limit where one exists, so words aren't cut
+    mid-word; falls back to a hard cut for a single "word" longer than
+    max_len (e.g. a long URL/string with no spaces). Returns [text]
+    unchanged (no copy) when it already fits."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks = []
+    remaining = text
+    while len(remaining) > max_len:
+        split_at = remaining.rfind(" ", 0, max_len + 1)
+        if split_at <= 0:
+            split_at = max_len
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
 
 
 def _escape_field(value: str) -> str:
