@@ -32,14 +32,6 @@ only works when both bots run on the same machine. Gated behind
 NAME_CHECK_ENFORCE (default off): while off, every check still runs and
 logs its verdict, but never actually blocks anyone -- a dry run to gauge
 the false-positive rate before enforcing for real.
-
-Also optionally tails a SECOND, one-way file -- modlog-outbox.txt, written
-by TAZC_Server.lua's appendModLog -- into a private staff-only moderation
-channel: character renames, tagline/bio changes, character-sheet
-description changes, and notes written about another character. Lets
-staff catch inappropriate content without needing to be logged into the
-game. See MODLOG_CHANNEL_ID in .env.example; leave it blank to disable
-this entirely.
 """
 
 import asyncio
@@ -119,12 +111,6 @@ REMOTE_STATUS_FILE = f"{ZOMBOID_DATA_PATH}/Lua/TAZC/discordbridge/status.txt"
 # after reviewing a few days of these logs and confirming the false-positive
 # rate (e.g. from Unicode-mangled usernames) is acceptable.
 NAME_CHECK_ENFORCE = os.environ.get("NAME_CHECK_ENFORCE", "false").strip().lower() == "true"
-
-# Optional moderation log (private staff channel): see .env.example for the
-# full explanation. Blank MODLOG_CHANNEL_ID disables it entirely -- the
-# poll loop simply never starts.
-MODLOG_CHANNEL_ID = int(os.environ["MODLOG_CHANNEL_ID"]) if os.environ.get("MODLOG_CHANNEL_ID") else None
-REMOTE_MODLOG_OUTBOX = f"{ZOMBOID_DATA_PATH}/Lua/TAZC/discordbridge/modlog-outbox.txt"
 
 
 # ============================================================================
@@ -487,8 +473,6 @@ class TazcBridgeClient(discord.Client):
 
     async def setup_hook(self):
         self.poll_outbox.start()
-        if MODLOG_CHANNEL_ID:
-            self.poll_modlog.start()
 
     async def on_ready(self):
         log.info("Logged in as %s", self.user)
@@ -601,51 +585,8 @@ class TazcBridgeClient(discord.Client):
     async def before_poll_outbox(self):
         await self.wait_until_ready()
 
-    @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
-    async def poll_modlog(self):
-        """Tails modlog-outbox.txt (TAZC_Server.lua's appendModLog) into the
-        private staff moderation channel. One-way, destructive read (same
-        read_and_clear as poll_outbox) -- nothing else needs this file back,
-        so there's no round-trip/id-echo dance like the radio bridge has."""
-        try:
-            lines = await asyncio.get_event_loop().run_in_executor(
-                None, self.sftp.read_and_clear, REMOTE_MODLOG_OUTBOX
-            )
-        except Exception:
-            log.exception("Failed to poll modlog outbox")
-            return
-
-        if not lines:
-            return
-
-        channel = self.get_channel(MODLOG_CHANNEL_ID)
-        if channel is None:
-            log.error("Configured MODLOG_CHANNEL_ID %s not found/visible to bot", MODLOG_CHANNEL_ID)
-            return
-
-        for line in lines:
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                log.warning("Malformed modlog line skipped: %r", line)
-                continue
-            message = _format_modlog_line(entry)
-            if message is None:
-                log.warning("Unrecognized modlog kind skipped: %r", entry.get("kind"))
-                continue
-            try:
-                await channel.send(message)
-            except Exception:
-                log.exception("Failed to post modlog line to channel %s", MODLOG_CHANNEL_ID)
-
-    @poll_modlog.before_loop
-    async def before_poll_modlog(self):
-        await self.wait_until_ready()
-
     async def close(self):
         self.poll_outbox.cancel()
-        if MODLOG_CHANNEL_ID:
-            self.poll_modlog.cancel()
         self.sftp.close()
         await super().close()
 
@@ -678,37 +619,6 @@ def _escape_field(value: str) -> str:
     either."""
     cleaned = "".join(ch if ch.isprintable() else " " for ch in value)
     return cleaned.replace("|", "/")
-
-
-def _format_modlog_line(entry: dict) -> "str | None":
-    """Formats one parsed modlog-outbox.txt JSON object into a Discord
-    message for the staff moderation channel. Returns None for a kind this
-    bot doesn't recognize (forward-compatible -- a newer Lua side adding a
-    kind this bot doesn't know yet just gets silently skipped rather than
-    crashing the poll loop)."""
-    kind = entry.get("kind")
-    username = entry.get("user") or "?"
-    character_name = entry.get("char") or ""
-    target = entry.get("target") or ""
-    text = entry.get("text") or ""
-    who = f"**{character_name}** ({username})" if character_name else f"**{username}**"
-
-    # Discord's hard cap is 2000 chars; truncate generously below that so a
-    # very long bio/description/note can never fail to send.
-    MAX_FIELD = 1500
-    if len(text) > MAX_FIELD:
-        text = text[:MAX_FIELD] + "... (truncated)"
-
-    if kind == "name":
-        return f"🪪 {who} renamed their character to **{text or '(empty)'}**"
-    if kind == "bio":
-        return f"📝 {who} set their tagline to: {text!r}" if text else f"📝 {who} cleared their tagline"
-    if kind == "desc":
-        return (f"📄 {who} updated their character description:\n> {text}" if text
-                else f"📄 {who} cleared their character description")
-    if kind == "note":
-        return f"🗒️ {who} wrote a note about **{target}**: {text!r}"
-    return None
 
 
 def _parse_outbox_line(line: str):
